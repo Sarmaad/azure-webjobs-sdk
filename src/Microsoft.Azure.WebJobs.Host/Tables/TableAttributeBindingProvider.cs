@@ -2,13 +2,16 @@
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
 using System;
+using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Host.Bindings;
 using Microsoft.Azure.WebJobs.Host.Executors;
 using Microsoft.Azure.WebJobs.Host.Storage;
 using Microsoft.Azure.WebJobs.Host.Storage.Table;
 using Microsoft.WindowsAzure.Storage.Table;
+using Newtonsoft.Json.Linq;
 
 namespace Microsoft.Azure.WebJobs.Host.Tables
 {
@@ -20,7 +23,7 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
         private readonly INameResolver _nameResolver;
         private readonly IStorageAccountProvider _accountProvider;
 
-        public TableAttributeBindingProvider(INameResolver nameResolver, IStorageAccountProvider accountProvider, IExtensionRegistry extensions)
+        private TableAttributeBindingProvider(INameResolver nameResolver, IStorageAccountProvider accountProvider, IExtensionRegistry extensions)
         {
             if (accountProvider == null)
             {
@@ -47,6 +50,47 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
                 new CompositeEntityArgumentBindingProvider(
                 new TableEntityArgumentBindingProvider(),
                 new PocoEntityArgumentBindingProvider()); // Supports all types; must come after other providers
+        }
+
+        public static IBindingProvider Build(INameResolver nameResolver, IConverterManager converterManager, IStorageAccountProvider accountProvider, IExtensionRegistry extensions)
+        {
+            var original = new TableAttributeBindingProvider(nameResolver, accountProvider, extensions);
+
+            converterManager.AddConverter<JObject, ITableEntity, TableAttribute>(original.JObjectToTableEntityConverterFunc);
+
+            var bindingFactory = new BindingFactory(nameResolver, converterManager);
+            var bindAsyncCollector = bindingFactory.BindToAsyncCollector<TableAttribute, ITableEntity>(original.BuildFromTableAttribute);
+
+            // Filter to just support JObject, and use legacy bindings for everything else. 
+            // Once we have ITableEntity converters for pocos, we can remove the filter. 
+            // https://github.com/Azure/azure-webjobs-sdk/issues/887
+            bindAsyncCollector = bindingFactory.AddFilter<TableAttribute>(
+                (attr, type) => (type == typeof(IAsyncCollector<JObject>) || type == typeof(ICollector<JObject>)), 
+                bindAsyncCollector); 
+
+            var bindingProvider = new GenericCompositeBindingProvider<TableAttribute>(
+                new IBindingProvider[] { bindAsyncCollector, original });
+
+            return bindingProvider;
+        }
+
+        // Use ResolvedAttr. 
+
+        private IAsyncCollector<ITableEntity> BuildFromTableAttribute(TableAttribute attribute)
+        {
+            // $$$ multi account
+            var account = _accountProvider.GetStorageAccountAsync(CancellationToken.None).GetAwaiter().GetResult();
+            var tableClient = account.CreateTableClient();
+            IStorageTable table = tableClient.GetTableReference(attribute.TableName);
+
+            var writer = new TableEntityWriter<ITableEntity>(table);
+            return writer;
+        }
+
+        private ITableEntity JObjectToTableEntityConverterFunc(JObject source, TableAttribute attribute)
+        {
+            var result = this.CreateTableEntityFromJObject(attribute.PartitionKey, attribute.RowKey, source);
+            return result;
         }
 
         public async Task<IBinding> TryCreateAsync(BindingProviderContext context)
@@ -112,6 +156,53 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
             }
 
             return _nameResolver.ResolveWholeString(queueName);
+        }
+
+        private DynamicTableEntity CreateTableEntityFromJObject(string partitionKey, string rowKey, JObject entity)
+        {
+            // any key values specified on the entity override any values
+            // specified in the binding
+            JProperty keyProperty = entity.Properties().SingleOrDefault(p => string.Compare(p.Name, "partitionKey", StringComparison.OrdinalIgnoreCase) == 0);
+            if (keyProperty != null)
+            {
+                partitionKey = Resolve((string)keyProperty.Value);
+                entity.Remove(keyProperty.Name);
+            }
+
+            keyProperty = entity.Properties().SingleOrDefault(p => string.Compare(p.Name, "rowKey", StringComparison.OrdinalIgnoreCase) == 0);
+            if (keyProperty != null)
+            {
+                rowKey = Resolve((string)keyProperty.Value);
+                entity.Remove(keyProperty.Name);
+            }
+
+            DynamicTableEntity tableEntity = new DynamicTableEntity(partitionKey, rowKey);
+            foreach (JProperty property in entity.Properties())
+            {
+                EntityProperty entityProperty = CreateEntityPropertyFromJProperty(property);
+                tableEntity.Properties.Add(property.Name, entityProperty);
+            }
+
+            return tableEntity;
+        }
+
+        private static EntityProperty CreateEntityPropertyFromJProperty(JProperty property)
+        {
+            switch (property.Value.Type)
+            {
+                case JTokenType.String:
+                    return EntityProperty.GeneratePropertyForString((string)property.Value);
+                case JTokenType.Integer:
+                    return EntityProperty.GeneratePropertyForInt((int)property.Value);
+                case JTokenType.Boolean:
+                    return EntityProperty.GeneratePropertyForBool((bool)property.Value);
+                case JTokenType.Guid:
+                    return EntityProperty.GeneratePropertyForGuid((Guid)property.Value);
+                case JTokenType.Float:
+                    return EntityProperty.GeneratePropertyForDouble((double)property.Value);
+                default:
+                    return EntityProperty.CreateEntityPropertyFromObject((object)property.Value);
+            }
         }
     }
 }

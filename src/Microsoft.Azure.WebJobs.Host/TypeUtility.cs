@@ -1,10 +1,10 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
-using Newtonsoft.Json.Linq;
 using System;
 using System.Globalization;
 using System.Reflection;
+using Newtonsoft.Json.Linq;
 
 namespace Microsoft.Azure.WebJobs.Host
 {

@@ -71,9 +71,8 @@ namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
             Assert.True(table.Exists());
         }
 
-        
         [Fact]
-        public void Table_IfBoundToICollectorJObject_AddInsertsEntity()
+        public void Table_IfBoundToICollectorJObject_AddInsertsEntity()    
         {
             // Arrange
             const string expectedValue = "abc";
@@ -92,12 +91,8 @@ namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
             Assert.NotNull(entity);
             Assert.NotNull(entity.Properties);
 
-            // $$$
-            Assert.True(entity.Properties.ContainsKey(PropertyName));
-            EntityProperty property = entity.Properties[PropertyName];
-            Assert.NotNull(property);
-            Assert.Equal(EdmType.String, property.PropertyType);
-            Assert.Equal(expectedValue, property.StringValue);
+            AssertPropertyValue(entity, "ValueStr", "abcdef");
+            AssertPropertyValue(entity, "ValueNum", 123);         
         }
 
         [Fact]
@@ -303,6 +298,27 @@ namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
             Assert.Equal(expected, actualValue.Value);
         }
 
+        private static void AssertPropertyValue(DynamicTableEntity entity, string propertyName, object expectedValue)
+        {
+            Assert.True(entity.Properties.ContainsKey(propertyName));
+            EntityProperty property = entity.Properties[propertyName];
+            Assert.NotNull(property);
+
+            if (expectedValue is string)
+            {
+                Assert.Equal(EdmType.String, property.PropertyType);
+                Assert.Equal(expectedValue, property.StringValue);
+            }
+            else if (expectedValue is int)
+            {
+                Assert.Equal(EdmType.Int32, property.PropertyType);
+                Assert.Equal(expectedValue, property.Int32Value);
+            }
+            else {
+                Assert.False(true, "test bug: unsupported property type: " + expectedValue.GetType().FullName);
+            }
+        }
+
         private static void AssertPropertyEqual<T>(T expected,
             EdmType expectedType,
             IDictionary<string, EntityProperty> properties,
@@ -367,7 +383,7 @@ namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
             }
         }
 
-        private class BindToICollectorJObjectProgram
+        private class BindToICollectorJObjectProgram 
         {
             public static void Run([QueueTrigger(TriggerQueueName)] CloudQueueMessage message,
                 [Table(TableName)] ICollector<JObject> table)
@@ -375,7 +391,7 @@ namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
                 table.Add(JObject.FromObject( new {
                     PartitionKey = PartitionKey,
                     RowKey = RowKey,
-                    ValueStr = "abc",
+                    ValueStr = "abcdef",
                     ValueNum = 123 
                 }));
             }
