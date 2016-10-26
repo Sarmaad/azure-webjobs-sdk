@@ -18,6 +18,7 @@ using Microsoft.WindowsAzure.Storage.Queue;
 using Microsoft.WindowsAzure.Storage.Table;
 using Newtonsoft.Json;
 using Xunit;
+using Newtonsoft.Json.Linq;
 
 namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
 {
@@ -68,6 +69,35 @@ namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
             IStorageTableClient client = account.CreateTableClient();
             IStorageTable table = client.GetTableReference(TableName);
             Assert.True(table.Exists());
+        }
+
+        
+        [Fact]
+        public void Table_IfBoundToICollectorJObject_AddInsertsEntity()
+        {
+            // Arrange
+            const string expectedValue = "abc";
+            IStorageAccount account = CreateFakeStorageAccount();
+            IStorageQueue triggerQueue = CreateQueue(account, TriggerQueueName);
+            triggerQueue.AddMessage(triggerQueue.CreateMessage(expectedValue));
+
+            // Act
+            RunTrigger(account, typeof(BindToICollectorJObjectProgram));
+
+            // Assert
+            IStorageTableClient client = account.CreateTableClient();
+            IStorageTable table = client.GetTableReference(TableName);
+            Assert.True(table.Exists());
+            DynamicTableEntity entity = table.Retrieve<DynamicTableEntity>(PartitionKey, RowKey);
+            Assert.NotNull(entity);
+            Assert.NotNull(entity.Properties);
+
+            // $$$
+            Assert.True(entity.Properties.ContainsKey(PropertyName));
+            EntityProperty property = entity.Properties[PropertyName];
+            Assert.NotNull(property);
+            Assert.Equal(EdmType.String, property.PropertyType);
+            Assert.Equal(expectedValue, property.StringValue);
         }
 
         [Fact]
@@ -334,6 +364,20 @@ namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
                 [Table(TableName)] CloudTable table)
             {
                 TaskSource.TrySetResult(table);
+            }
+        }
+
+        private class BindToICollectorJObjectProgram
+        {
+            public static void Run([QueueTrigger(TriggerQueueName)] CloudQueueMessage message,
+                [Table(TableName)] ICollector<JObject> table)
+            {
+                table.Add(JObject.FromObject( new {
+                    PartitionKey = PartitionKey,
+                    RowKey = RowKey,
+                    ValueStr = "abc",
+                    ValueNum = 123 
+                }));
             }
         }
 

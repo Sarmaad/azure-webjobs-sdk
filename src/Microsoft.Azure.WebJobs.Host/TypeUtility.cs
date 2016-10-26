@@ -1,6 +1,7 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
+using Newtonsoft.Json.Linq;
 using System;
 using System.Globalization;
 using System.Reflection;
@@ -24,6 +25,11 @@ namespace Microsoft.Azure.WebJobs.Host
         internal static bool IsNullable(Type type)
         {
             return type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>);
+        }
+
+        internal static bool IsJObject(Type type)
+        {
+            return type == typeof(JObject);
         }
 
         /// <summary>

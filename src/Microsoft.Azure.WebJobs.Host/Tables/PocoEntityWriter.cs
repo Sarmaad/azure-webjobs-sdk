@@ -1,6 +1,7 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Host.Bindings;
@@ -8,6 +9,8 @@ using Microsoft.Azure.WebJobs.Host.Converters;
 using Microsoft.Azure.WebJobs.Host.Protocols;
 using Microsoft.Azure.WebJobs.Host.Storage.Table;
 using Microsoft.WindowsAzure.Storage.Table;
+using Newtonsoft.Json.Linq;
+using System.Linq;
 
 namespace Microsoft.Azure.WebJobs.Host.Tables
 {
@@ -50,6 +53,71 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
         public ParameterLog GetStatus()
         {
             return TableEntityWriter.GetStatus();
+        }
+    }
+
+
+    internal class JObjectToTableEntityConverter : IConverter<JObject, ITableEntity>
+    {
+        public static JObjectToTableEntityConverter Instance = new JObjectToTableEntityConverter();
+
+        public ITableEntity Convert(JObject input)
+        {
+            // $$$ Don't have context...
+            return CreateTableEntityFromJObject(null, null, input);
+        }
+
+        static string Resolve(string value)
+        {
+            return value; // $$$ use name resolver
+        }
+
+
+        private DynamicTableEntity CreateTableEntityFromJObject(string partitionKey, string rowKey, JObject entity)
+        {
+            // any key values specified on the entity override any values
+            // specified in the binding
+            JProperty keyProperty = entity.Properties().SingleOrDefault(p => string.Compare(p.Name, "partitionKey", StringComparison.OrdinalIgnoreCase) == 0);
+            if (keyProperty != null)
+            {
+                partitionKey = Resolve((string)keyProperty.Value);
+                entity.Remove(keyProperty.Name);
+            }
+
+            keyProperty = entity.Properties().SingleOrDefault(p => string.Compare(p.Name, "rowKey", StringComparison.OrdinalIgnoreCase) == 0);
+            if (keyProperty != null)
+            {
+                rowKey = Resolve((string)keyProperty.Value);
+                entity.Remove(keyProperty.Name);
+            }
+
+            DynamicTableEntity tableEntity = new DynamicTableEntity(partitionKey, rowKey);
+            foreach (JProperty property in entity.Properties())
+            {
+                EntityProperty entityProperty = CreateEntityPropertyFromJProperty(property);
+                tableEntity.Properties.Add(property.Name, entityProperty);
+            }
+
+            return tableEntity;
+        }
+
+        private static EntityProperty CreateEntityPropertyFromJProperty(JProperty property)
+        {
+            switch (property.Value.Type)
+            {
+                case JTokenType.String:
+                    return EntityProperty.GeneratePropertyForString((string)property.Value);
+                case JTokenType.Integer:
+                    return EntityProperty.GeneratePropertyForInt((int)property.Value);
+                case JTokenType.Boolean:
+                    return EntityProperty.GeneratePropertyForBool((bool)property.Value);
+                case JTokenType.Guid:
+                    return EntityProperty.GeneratePropertyForGuid((Guid)property.Value);
+                case JTokenType.Float:
+                    return EntityProperty.GeneratePropertyForDouble((double)property.Value);
+                default:
+                    return EntityProperty.CreateEntityPropertyFromObject((object)property.Value);
+            }
         }
     }
 }
