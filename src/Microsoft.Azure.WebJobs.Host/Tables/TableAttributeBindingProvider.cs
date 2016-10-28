@@ -52,6 +52,23 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
                 new PocoEntityArgumentBindingProvider()); // Supports all types; must come after other providers
         }
 
+        // [Queue] has some pre-existing behavior where the storage account can be specified outside of the [Queue] attribute. 
+        // The storage account is pulled from the ParameterInfo (which could pull in a [Storage] attribute on the container class)
+        // Resolve everything back down to a single attribute so we can use the binding helpers. 
+        // This pattern should be rare since other extensions can just keep everything directly on the primary attribute. 
+        private async Task<TableAttribute> CollectAttributeInfo(TableAttribute attrResolved, ParameterInfo parameter, INameResolver nameResolver)
+        {
+            // Look for [Storage] attribute and squirrel over 
+            IStorageAccount account = await _accountProvider.GetStorageAccountAsync(parameter, CancellationToken.None, nameResolver);
+            StorageClientFactoryContext clientFactoryContext = new StorageClientFactoryContext
+            {
+                Parameter = parameter
+            };
+            IStorageTableClient client = account.CreateTableClient(clientFactoryContext);
+
+            return new ResolvedTableAttribute(attrResolved, client);
+        }
+        
         public static IBindingProvider Build(INameResolver nameResolver, IConverterManager converterManager, IStorageAccountProvider accountProvider, IExtensionRegistry extensions)
         {
             var original = new TableAttributeBindingProvider(nameResolver, accountProvider, extensions);
@@ -59,11 +76,10 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
             converterManager.AddConverter<JObject, ITableEntity, TableAttribute>(original.JObjectToTableEntityConverterFunc);
 
             var bindingFactory = new BindingFactory(nameResolver, converterManager);
-            var bindAsyncCollector = bindingFactory.BindToAsyncCollector<TableAttribute, ITableEntity>(original.BuildFromTableAttribute);
+            var bindAsyncCollector = bindingFactory.BindToAsyncCollector<TableAttribute, ITableEntity>(original.BuildFromTableAttribute, null, original.CollectAttributeInfo);
 
-            var bindToJobject = bindingFactory.BindToExactAsyncType<TableAttribute, JObject>(original.BuildJObject);
-
-            var bindToJArray = bindingFactory.BindToExactAsyncType<TableAttribute, JArray>(original.BuildJArray);
+            var bindToJobject = bindingFactory.BindToExactAsyncType<TableAttribute, JObject>(original.BuildJObject, null, original.CollectAttributeInfo);
+            var bindToJArray = bindingFactory.BindToExactAsyncType<TableAttribute, JArray>(original.BuildJArray, null, original.CollectAttributeInfo);
 
             // Filter to just support JObject, and use legacy bindings for everything else. 
             // Once we have ITableEntity converters for pocos, we can remove the filter. 
@@ -77,8 +93,7 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
 
             return bindingProvider;
         }
-
-        // attr is already resolved.
+        
         private async Task<JObject> BuildJObject(TableAttribute attribute)
         {
             IStorageTable table = GetTable(attribute);
@@ -98,8 +113,8 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
             }
         }
 
-        // Build 
-        // attr is already resolved.        
+        // Build a JArray.
+        // Used as an alternative to binding to IQueryable.
         private async Task<JArray> BuildJArray(TableAttribute attribute)
         {
             var table = GetTable(attribute).SdkObject;
@@ -161,11 +176,9 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
         }
 
         // Get the storage table from the attribute.
-        private IStorageTable GetTable(TableAttribute attribute)
+        private static IStorageTable GetTable(TableAttribute attribute)
         {
-            // $$$ multi account
-            var account = _accountProvider.GetStorageAccountAsync(CancellationToken.None).GetAwaiter().GetResult();
-            var tableClient = account.CreateTableClient();
+            var tableClient = ((ResolvedTableAttribute)attribute).Client;                           
             IStorageTable table = tableClient.GetTableReference(attribute.TableName);
             return table;
         }
@@ -329,6 +342,22 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
                 default:
                     return EntityProperty.CreateEntityPropertyFromObject((object)property.Value);
             }
+        }
+
+        // Table attributes can optionally be paired with a separate [StorageAccount]. 
+        // Consolidate the information from both attributes into a single attribute.
+        // New extensions should just place everything in the attribute or the configuration and so shouldn't need to do this. 
+        internal sealed class ResolvedTableAttribute : TableAttribute
+        {
+            public ResolvedTableAttribute(TableAttribute inner, IStorageTableClient client)
+                : base(inner.TableName, inner.PartitionKey, inner.RowKey)
+            {
+                this.Take = inner.Take;
+                this.Filter = inner.Filter;
+                this.Client = client;
+            }
+
+            internal IStorageTableClient Client { get; private set; }
         }
     }
 }

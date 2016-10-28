@@ -31,7 +31,7 @@ namespace Microsoft.Azure.WebJobs
     /// </remarks>
     [AttributeUsage(AttributeTargets.Parameter)]
     [DebuggerDisplay("{DebuggerDisplay,nq}")]
-    public sealed class TableAttribute : Attribute
+    public class TableAttribute : Attribute
     {
         private readonly string _tableName;
         private readonly string _partitionKey;
