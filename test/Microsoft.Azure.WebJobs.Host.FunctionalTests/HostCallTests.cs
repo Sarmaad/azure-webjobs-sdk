@@ -22,6 +22,7 @@ using Microsoft.WindowsAzure.Storage.Queue;
 using Microsoft.WindowsAzure.Storage.Table;
 using Newtonsoft.Json;
 using Xunit;
+using Newtonsoft.Json.Linq;
 
 namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
 {
@@ -1050,6 +1051,35 @@ namespace Microsoft.Azure.WebJobs.Host.FunctionalTests
                 // The attempted update by this method should now fail.
                 collector.Add(new DynamicTableEntity(PartitionKey, RowKey, entity.ETag,
                     new Dictionary<string, EntityProperty> { { "Value", new EntityProperty("Bar") } }));
+            }
+        }
+
+        [Fact]
+        public void TableEntity_IfBoundToJObject_CanCall()
+        {
+            // Arrange
+            IStorageAccount account = CreateFakeStorageAccount();
+            IStorageTableClient client = account.CreateTableClient();
+            IStorageTable table = client.GetTableReference(TableName);
+            table.CreateIfNotExists();
+            table.Insert(CreateTableEntity(PartitionKey, RowKey, "Value", "Foo"));
+
+            // Act
+            Call(account, typeof(BindTableEntityToJObjectProgram), "Call");
+
+            // Assert
+            SdkTableEntity entity = table.Retrieve<SdkTableEntity>(PartitionKey, RowKey);
+            Assert.NotNull(entity);
+            // Assert.Equal("Bar", entity.Value);
+        }
+
+        private class BindTableEntityToJObjectProgram
+        {
+            public static void Call([Table(TableName, PartitionKey, RowKey)] JObject entity)
+            {
+                Assert.NotNull(entity);
+                Assert.Equal("Foo", entity["Value"].ToString());
+                entity["Value"] = "Bar";
             }
         }
 

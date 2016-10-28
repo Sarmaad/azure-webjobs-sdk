@@ -61,6 +61,8 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
             var bindingFactory = new BindingFactory(nameResolver, converterManager);
             var bindAsyncCollector = bindingFactory.BindToAsyncCollector<TableAttribute, ITableEntity>(original.BuildFromTableAttribute);
 
+            var bindToJobject = bindingFactory.BindToExactAsyncType<TableAttribute, JObject>(original.BuildJObject);
+
             // Filter to just support JObject, and use legacy bindings for everything else. 
             // Once we have ITableEntity converters for pocos, we can remove the filter. 
             // https://github.com/Azure/azure-webjobs-sdk/issues/887
@@ -69,22 +71,47 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
                 bindAsyncCollector); 
 
             var bindingProvider = new GenericCompositeBindingProvider<TableAttribute>(
-                new IBindingProvider[] { bindAsyncCollector, original });
+                new IBindingProvider[] { bindToJobject, bindAsyncCollector, original });
 
             return bindingProvider;
         }
 
-        // Use ResolvedAttr. 
+        // attr is already resolved.
+        private async Task<JObject> BuildJObject(TableAttribute attribute)
+        {
+            IStorageTable table = GetTable(attribute);
+
+            IStorageTableOperation retrieve = table.CreateRetrieveOperation<DynamicTableEntity>(
+              attribute.PartitionKey, attribute.RowKey);
+            TableResult result = await table.ExecuteAsync(retrieve, CancellationToken.None);
+            DynamicTableEntity entity = (DynamicTableEntity)result.Result;
+            if (entity == null)
+            {
+                return null;
+            }
+            else
+            {
+                var obj = ConvertEntityToJObject(entity);
+                return obj;
+            }
+        }
 
         private IAsyncCollector<ITableEntity> BuildFromTableAttribute(TableAttribute attribute)
+        {
+            IStorageTable table = GetTable(attribute);
+
+            var writer = new TableEntityWriter<ITableEntity>(table);
+            return writer;
+        }
+
+        // Get the storage table from the attribute.
+        private IStorageTable GetTable(TableAttribute attribute)
         {
             // $$$ multi account
             var account = _accountProvider.GetStorageAccountAsync(CancellationToken.None).GetAwaiter().GetResult();
             var tableClient = account.CreateTableClient();
             IStorageTable table = tableClient.GetTableReference(attribute.TableName);
-
-            var writer = new TableEntityWriter<ITableEntity>(table);
-            return writer;
+            return table;
         }
 
         private ITableEntity JObjectToTableEntityConverterFunc(JObject source, TableAttribute attribute)
@@ -156,6 +183,49 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
             }
 
             return _nameResolver.ResolveWholeString(queueName);
+        }
+
+        private static JObject ConvertEntityToJObject(DynamicTableEntity tableEntity)
+        {
+            JObject jsonObject = new JObject();
+            foreach (var entityProperty in tableEntity.Properties)
+            {
+                JValue value = null;
+                switch (entityProperty.Value.PropertyType)
+                {
+                    case EdmType.String:
+                        value = new JValue(entityProperty.Value.StringValue);
+                        break;
+                    case EdmType.Int32:
+                        value = new JValue(entityProperty.Value.Int32Value);
+                        break;
+                    case EdmType.Int64:
+                        value = new JValue(entityProperty.Value.Int64Value);
+                        break;
+                    case EdmType.DateTime:
+                        value = new JValue(entityProperty.Value.DateTime);
+                        break;
+                    case EdmType.Boolean:
+                        value = new JValue(entityProperty.Value.BooleanValue);
+                        break;
+                    case EdmType.Guid:
+                        value = new JValue(entityProperty.Value.GuidValue);
+                        break;
+                    case EdmType.Double:
+                        value = new JValue(entityProperty.Value.DoubleValue);
+                        break;
+                    case EdmType.Binary:
+                        value = new JValue(entityProperty.Value.BinaryValue);
+                        break;
+                }
+
+                jsonObject.Add(entityProperty.Key, value);
+            }
+
+            jsonObject.Add("PartitionKey", tableEntity.PartitionKey);
+            jsonObject.Add("RowKey", tableEntity.RowKey);
+
+            return jsonObject;
         }
 
         private DynamicTableEntity CreateTableEntityFromJObject(string partitionKey, string rowKey, JObject entity)
