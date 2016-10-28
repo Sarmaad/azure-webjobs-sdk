@@ -63,6 +63,8 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
 
             var bindToJobject = bindingFactory.BindToExactAsyncType<TableAttribute, JObject>(original.BuildJObject);
 
+            var bindToJArray = bindingFactory.BindToExactAsyncType<TableAttribute, JArray>(original.BuildJArray);
+
             // Filter to just support JObject, and use legacy bindings for everything else. 
             // Once we have ITableEntity converters for pocos, we can remove the filter. 
             // https://github.com/Azure/azure-webjobs-sdk/issues/887
@@ -71,7 +73,7 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
                 bindAsyncCollector); 
 
             var bindingProvider = new GenericCompositeBindingProvider<TableAttribute>(
-                new IBindingProvider[] { bindToJobject, bindAsyncCollector, original });
+                new IBindingProvider[] { bindToJArray, bindToJobject, bindAsyncCollector, original });
 
             return bindingProvider;
         }
@@ -94,6 +96,60 @@ namespace Microsoft.Azure.WebJobs.Host.Tables
                 var obj = ConvertEntityToJObject(entity);
                 return obj;
             }
+        }
+
+        // Build 
+        // attr is already resolved.        
+        private async Task<JArray> BuildJArray(TableAttribute attribute)
+        {
+            var table = GetTable(attribute).SdkObject;
+
+            string finalQuery = attribute.Filter;
+            if (!string.IsNullOrEmpty(attribute.PartitionKey))
+            {
+                var partitionKeyPredicate = TableQuery.GenerateFilterCondition("PartitionKey", QueryComparisons.Equal, attribute.PartitionKey);
+                if (!string.IsNullOrEmpty(attribute.Filter))
+                {
+                    finalQuery = TableQuery.CombineFilters(attribute.Filter, TableOperators.And, partitionKeyPredicate);
+                }
+                else
+                {
+                    finalQuery = partitionKeyPredicate;
+                }
+            }
+
+            TableQuery tableQuery = new TableQuery
+            {
+                TakeCount = attribute.Take, // Batch size for query. 
+                FilterString = finalQuery
+            };
+            int countRemaining = attribute.Take;
+
+            JArray entityArray = new JArray();
+            TableContinuationToken token = null;
+
+            do
+            {
+                var segment = await table.ExecuteQuerySegmentedAsync(tableQuery, token);
+                var entities = segment.Results;
+
+                token = segment.ContinuationToken;
+
+                foreach (var entity in entities)
+                {
+                    countRemaining--;
+                    entityArray.Add(ConvertEntityToJObject(entity));
+
+                    if (countRemaining == 0)
+                    {
+                        token = null;
+                        break;
+                    }
+                }                
+            }
+            while (token != null);                      
+
+            return entityArray;
         }
 
         private IAsyncCollector<ITableEntity> BuildFromTableAttribute(TableAttribute attribute)
